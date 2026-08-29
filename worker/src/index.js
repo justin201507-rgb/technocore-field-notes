@@ -141,17 +141,88 @@ async function dailyPost(env, signer, did) {
   return { room, status: r.status, text: r.text.slice(0, 160) };
 }
 
+/**
+ * 公開した記事は「実測でこうだった」という3つの主張に全体重を預けている。
+ * 状況が変われば記事は誤情報になるが、それに気づく手段が人間の記憶しかないと必ず腐る。
+ * だから3つとも機械に見張らせる。1日1回だけ。
+ *
+ * 🔴 取れなかった時は「変わっていない」ではなく「分からない」として黙る。
+ *    判定不能を正常と同じ扱いにすると、壊れた時に無言で通過する。
+ */
+async function checkArticleClaims(env) {
+  const broken = [];   // 主張が崩れた＝記事が誤情報になった
+  const unknown = [];  // 確認できなかった＝「異常なし」と同じ扱いにしてはいけない
+
+  // 主張1：ルーム上限に到達していて、新しい部屋は作れない。
+  // 読み取りだけで確かめる方法が無いので実際に書いてみる。上限のままなら 400 が返るだけで
+  // 何も作られない。作られてしまうのは「状況が変わった日」の1回だけで、しかも
+  // p- は列挙されず、1発言のままの部屋は24時間で消える。
+  const probe = "p-capprobe" + [...crypto.getRandomValues(new Uint8Array(8))]
+    .map((b) => b.toString(16).padStart(2, "0")).join("");
+  const r = await http(env, `/r/${enc(probe)}/say/probe/checking-whether-the-room-cap-still-holds`,
+                       { tries: 1, budgetMs: 10000 });
+  if (r.status === 200) {
+    broken.push("CLAIM BROKEN: room creation succeeded - the cap has cleared. The published notes say it is reached.");
+  } else if (r.status !== 400 || !/room limit reached/i.test(r.text)) {
+    unknown.push(`room-cap: unexpected ${r.status} ${r.text.slice(0, 80)}`);
+  }
+
+  // 主張2：旧 /kv/did/ が満杯かどうか。固定値では判定しない ―
+  // 上限そのものが動くので、サーバが今そう言っている値と突き合わせる。
+  // 一覧は約2MBあるので余裕をもった予算を与える。取れなければ unknown に落とす。
+  const [manifestRes, legacy] = await Promise.all([
+    http(env, "/.well-known/agent.json", { tries: 2, budgetMs: 10000 }),
+    http(env, "/kv/did", { tries: 2, budgetMs: 45000 }),
+  ]);
+  if (manifestRes.status !== 200 || legacy.status !== 200) {
+    unknown.push(`legacy-did: manifest ${manifestRes.status} / listing ${legacy.status}`);
+  } else {
+    try {
+      const cap = JSON.parse(manifestRes.text)?.limits?.notes_per_namespace;
+      const n = (legacy.text.match(/^\/kv\//gm) || []).length;
+      if (!cap || !n) {
+        unknown.push(`legacy-did: cap=${cap} count=${n}`);
+      } else if (n < cap * 0.99) {
+        broken.push(`CLAIM BROKEN: legacy /kv/did/ holds ${n} of ${cap} keys - it is NOT full and accepts writes again.`);
+      }
+    } catch (e) {
+      unknown.push("legacy-did: " + e.message);
+    }
+  }
+
+  // 主張3：7日で消えるのはルームだけでなくノートも、という記述。
+  const manual = await http(env, "/llms.txt", { tries: 2, budgetMs: 12000 });
+  if (manual.status !== 200 || manual.text.length < 2000) {
+    unknown.push(`manual: ${manual.status} (${manual.text.length} bytes)`);
+  } else {
+    // 🔴 マニュアルは整形済みテキストで、この文は行をまたいで折り返される。
+    // 空白を潰してから照合しないと、記述があるのに「消えた」と誤報する（実際に踏んだ）。
+    const flat = manual.text.replace(/\s+/g, " ");
+    if (!/rooms and notes with no write for 7 days are deleted/i.test(flat)) {
+      broken.push("CLAIM BROKEN: the manual no longer says rooms AND notes are deleted after 7 days with no write.");
+    }
+  }
+
+  return { broken, unknown };
+}
+
 /** faucet / testnet の兆候。前回と変わった時だけ知らせる（毎回鳴る警報は読まれなくなる）。 */
 const WATCH_RE = /faucet|testnet|airdrop|claim|mint/i;
 
-async function watch(env) {
+async function watch(env, { forceClaims = false } = {}) {
   const news = [];
 
   const manifest = await http(env, "/.well-known/agent.json", { tries: 2, budgetMs: 8000 });
   if (manifest.status === 200) {
     try {
       const m = JSON.parse(manifest.text);
-      const shape = JSON.stringify({ v: m.version, caps: (m.capabilities || []).map((c) => c.name).sort() });
+      // 🔴 limits を必ず含める。2026-08-29 に上限が倍化して公開記事の数字が古くなったが、
+      // version と capabilities だけ見ていたので気づけなかった。数字が動いたら鳴らす。
+      const shape = JSON.stringify({
+        v: m.version,
+        caps: (m.capabilities || []).map((c) => c.name).sort(),
+        limits: m.limits || {},
+      });
       const prev = await env.FLOP_STATE.get("manifest");
       if (prev && prev !== shape) news.push(`manifest changed: ${prev} -> ${shape}`);
       if (prev !== shape) await env.FLOP_STATE.put("manifest", shape);
@@ -191,7 +262,20 @@ async function watch(env) {
       await env.FLOP_STATE.put("rooms_seen", JSON.stringify(names));
     }
   }
-  return news;
+
+  // 記事の前提チェックは1日1回で足りる（書き込みプローブを含むので毎回は回さない）
+  const today = new Date().toISOString().slice(0, 10);
+  let claims = null;
+  // KVは結果整合なので、手で確かめたい時は日次ゲートを飛ばせるようにしておく
+  if (forceClaims || (await env.FLOP_STATE.get("last_claims_day")) !== today) {
+    claims = await checkArticleClaims(env);
+    news.push(...claims.broken);
+    // 判定不能は警報にはしないが、必ず記録に残す。黙って素通りさせない。
+    await env.FLOP_STATE.put("last_claims", JSON.stringify({ t: new Date().toISOString(), ...claims }));
+    await env.FLOP_STATE.put("last_claims_day", today);
+  }
+
+  return { news, claims };
 }
 
 /**
@@ -247,17 +331,18 @@ async function run(env, { force = false, trigger = "manual" } = {}) {
     if (post.status === 200) await env.FLOP_STATE.put("last_post_day", today);
   }
 
-  const news = await watch(env);
+  const { news, claims } = await watch(env, { forceClaims: force });
 
   const ok = note.status === 200 && (post === null || post.status === 200);
   const summary =
     `note ${note.status} ${note.path}` +
     (post ? ` / say ${post.status} ${post.room}` : " / say skipped (already posted today)") +
-    (news.length ? ` / ⚠️ ${news.join(" | ")}` : "");
+    (news.length ? ` / ⚠️ ${news.join(" | ")}` : "") +
+    (claims && claims.unknown.length ? ` / 判定不能: ${claims.unknown.join("; ")}` : "");
 
   const ping = await pingMonitor(env, ok && !news.length ? "ok" : "error", summary);
 
-  const result = { started, trigger, did, ok, note, post, news, ping };
+  const result = { started, trigger, did, ok, note, post, news, claims, ping };
   await env.FLOP_STATE.put("last_run", JSON.stringify(result));
   await appendHistory(env, {
     t: started, trigger, ok,
@@ -304,10 +389,11 @@ export default {
     }
 
     if (url.pathname === "/status") {
-      const [last, history, lastNoteOk] = await Promise.all([
+      const [last, history, lastNoteOk, lastClaims] = await Promise.all([
         env.FLOP_STATE.get("last_run"),
         env.FLOP_STATE.get("history"),
         env.FLOP_STATE.get("last_note_ok"),
+        env.FLOP_STATE.get("last_claims"),
       ]);
       const { ns, key } = await noteLocation(env.FLOP_DID);
       const live = await http(env, `/kv/${enc(ns)}/${enc(key)}`, { tries: 2, budgetMs: 8000 });
@@ -320,6 +406,7 @@ export default {
         last_note_ok: lastNoteOk,
         hours_since_note_write: hoursSinceNote === null ? null : Number(hoursSinceNote.toFixed(1)),
         hours_until_reaped: hoursSinceNote === null ? null : Number((168 - hoursSinceNote).toFixed(1)),
+        last_claims: lastClaims ? JSON.parse(lastClaims) : null,
         last_run: last ? JSON.parse(last) : null,
         history: history ? JSON.parse(history) : [],
       });
