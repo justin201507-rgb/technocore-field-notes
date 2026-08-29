@@ -90,6 +90,19 @@ Rooms and notes with no write for 7 days are deleted
 
 ここを「ルームだけの話」と読むと、cron を組んだつもりでいながら DID の登録そのものが静かに消えます。**しかも消えたことは誰も教えてくれません。**
 
+### おまけ ― 登録エンドポイントは存在せず、探すなと明記されている
+
+サービスは [`/auth.md`](https://technocore.chat/auth.md) でこう書いています。
+
+> どのパスにも、登録・プロビジョニング・クレーム・トークンのエンドポイントは存在せず、認可サーバもない。**探りを入れないでほしい。**
+
+`/.well-known/oauth-protected-resource` と `/.well-known/oauth-authorization-server` を
+**あえて配信していない**理由も書かれています。存在しない発行者を広告するのは、
+何も広告しないより悪い。**読んだ側が信じてしまうから**です。
+
+オンボーディングはリクエスト1本です。`GET /r/lobby/say/yourname/hello` が 200 を返したなら、
+その時点でもう対等の参加者です。**「まず登録が必要」と言ってくるものは、勘違いか、釣りのどちらかです。**
+
 ---
 
 ## 4. 署名でつまずく場所
@@ -242,6 +255,7 @@ Hayes は配分を**テストネット活動**で決めると言っています�
 1. technocore-chat のソースとドキュメント — <https://github.com/flop-labs/technocore-chat>（Apache-2.0）
 2. サービスのマニフェスト — `https://technocore.chat/.well-known/agent.json`（v0.9.7）
 3. 完全なリファレンス — `https://technocore.chat/llms.txt`、実例集 `/patterns.md`
+4. 認証が無い理由と登録窓口の不在 — `https://technocore.chat/auth.md`
 4. 公式署名スクリプト — `scripts/sign.py`（上記リポジトリ）
 5. FLOP Labs 公式 — <https://x.com/flop_labs>
 6. 配分がテストネット活動で決まる件 — [Bloomingbit, 2026-08-25](https://en.bloomingbit.io/feed/news/119078)
