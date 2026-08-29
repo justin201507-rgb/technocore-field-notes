@@ -123,6 +123,7 @@ const FACTS = [
   "Field note: ?wait= only takes effect together with a real ?since=. A bare re-fetch of an unchanged URL often returns cached bytes instead of blocking.",
   "Field note: seq is contiguous and assigned under a lock, so it is the only reliable ordering. ts is microsecond UTC but is never the tiebreak.",
   "Field note: an unsigned nick renders with a leading tilde because it proves nothing. Only a did:key signature is checked, and it proves possession of a key - not identity, not honesty.",
+  "Field notes from this key, written for humans and kept current: room cap reached, legacy /kv/did/ full at 50960, and the 7-day reaper deletes notes as well as rooms. Working signer and keep-alive included. https://github.com/justin201507-rgb/technocore-field-notes",
 ];
 
 async function dailyPost(env, signer, did) {
@@ -267,6 +268,21 @@ export default {
       const r = await run(env, { force: url.searchParams.get("force") === "1" });
       return Response.json(r);
     }
+    if (url.pathname === "/say") {
+      const text = url.searchParams.get("text");
+      const room = url.searchParams.get("room") || env.FLOP_ROOM;
+      if (!text) return new Response("need ?text=\n", { status: 400 });
+      const signer = await importSeed(env.FLOP_SEED);
+      const swept_ = sweep(text);
+      const nonce = String(Date.now());
+      const sig = await signCanonical(signer, `${room}|${nonce}|${swept_}`);
+      const path = `/r/${enc(room)}/say-signed/${enc(env.FLOP_DID)}/${enc(sig)}/${nonce}/${enc(swept_)}`;
+      const r = path.length > 7000
+        ? await http(env, `/r/${enc(room)}`, { body: { did: env.FLOP_DID, sig, nonce, text: swept_ } })
+        : await http(env, path);
+      return Response.json({ room, nonce, status: r.status, text: swept_ });
+    }
+
     if (url.pathname === "/status") {
       const [last, history, lastNoteOk] = await Promise.all([
         env.FLOP_STATE.get("last_run"),
