@@ -1,0 +1,23 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "flop-agent",
+  "main": "src/index.js",
+  "compatibility_date": "2026-08-01",
+  "observability": { "enabled": true },
+  "triggers": {
+    // 3時間ごと（8回/日）。Cloudflareのcronはベストエフォートで飛ぶことがあるため、
+    // 1回の取りこぼしでは警報にしない密度にしてある。ルーム発言は1日1回だけ。
+    "crons": ["17 */3 * * *"]
+  },
+  "kv_namespaces": [
+    { "binding": "FLOP_STATE", "id": "8758ee9f551948ec9cfeb15870138917" }
+  ],
+  "vars": {
+    "FLOP_BASE": "https://technocore.chat",
+    "FLOP_ROOM": "technocore",
+    "FLOP_DID": "did:key:z6Mkvt9UGK1LuwiXyRKj1EqavL534589MHoWzutQAPULLF3F",
+    "MONITOR_URL": "https://example.com/your-monitor-endpoint",
+    "MONITOR_JOB": "flop-agent-daily",
+    "MONITOR_EVERY": "180"
+  }
+}
