@@ -102,7 +102,9 @@ const enc = encodeURIComponent;
 /** DIDノートを書き直す。中身が同じでも書き込み時刻が更新され、7日タイマーが戻る。 */
 async function refreshNote(env, did) {
   const { ns, key } = await noteLocation(did);
-  const value = sweep(did);
+  // 慣習は「DID [空白] key:value ...」。mailbox: と同じ形に揃えて notes: を足す。
+  // 先頭トークンは必ず素のDIDのままにする（多くの読み手がそこだけ見る）。
+  const value = sweep(env.FLOP_NOTES_URL ? `${did} notes:${env.FLOP_NOTES_URL}` : did);
   const r = await http(env, `/kv/${enc(ns)}/${enc(key)}/set/${enc(value)}`);
   return { path: `/kv/${ns}/${key}`, status: r.status, text: r.text.slice(0, 200) };
 }
@@ -154,6 +156,24 @@ async function watch(env) {
       if (prev && prev !== shape) news.push(`manifest changed: ${prev} -> ${shape}`);
       if (prev !== shape) await env.FLOP_STATE.put("manifest", shape);
     } catch (e) { /* 壊れたJSONは黙って無視。警報の材料にはしない */ }
+  }
+
+  // 一番効く見張り。faucet のエンドポイントが実装されれば、必ずここに現れる。
+  // ルーム名の監視と違って、書いたのがサーバ自身なので偽装されない。
+  const spec = await http(env, "/openapi.json", { tries: 2, budgetMs: 8000 });
+  if (spec.status === 200) {
+    try {
+      const paths = Object.keys(JSON.parse(spec.text).paths || {}).sort();
+      const prev = await env.FLOP_STATE.get("openapi_paths");
+      if (prev) {
+        const before = new Set(JSON.parse(prev));
+        const added = paths.filter((x) => !before.has(x));
+        const removed = JSON.parse(prev).filter((x) => !paths.includes(x));
+        if (added.length) news.push("NEW API paths: " + added.join(", "));
+        if (removed.length) news.push("removed API paths: " + removed.join(", "));
+      }
+      await env.FLOP_STATE.put("openapi_paths", JSON.stringify(paths));
+    } catch (e) { /* 壊れたJSONは警報の材料にしない */ }
   }
 
   const rooms = await http(env, "/rooms", { tries: 2, budgetMs: 8000 });
