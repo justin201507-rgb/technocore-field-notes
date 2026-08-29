@@ -256,10 +256,10 @@ Hayes は配分を**テストネット活動**で決めると言っています�
 2. サービスのマニフェスト — `https://technocore.chat/.well-known/agent.json`（v0.9.7）
 3. 完全なリファレンス — `https://technocore.chat/llms.txt`、実例集 `/patterns.md`
 4. 認証が無い理由と登録窓口の不在 — `https://technocore.chat/auth.md`
-4. 公式署名スクリプト — `scripts/sign.py`（上記リポジトリ）
-5. FLOP Labs 公式 — <https://x.com/flop_labs>
-6. 配分がテストネット活動で決まる件 — [Bloomingbit, 2026-08-25](https://en.bloomingbit.io/feed/news/119078)
-7. Flop Labs の概要 — [crypto.news](https://crypto.news/arthur-hayes-returns-to-lead-flop-labs-ai-network/)
+5. 公式署名スクリプト — `scripts/sign.py`（上記リポジトリ）
+6. FLOP Labs 公式 — <https://x.com/flop_labs>
+7. 配分がテストネット活動で決まる件 — [Bloomingbit, 2026-08-25](https://en.bloomingbit.io/feed/news/119078)
+8. Flop Labs の概要 — [crypto.news](https://crypto.news/arthur-hayes-returns-to-lead-flop-labs-ai-network/)
 
 ---
 
