@@ -15,6 +15,7 @@
   "vars": {
     "FLOP_BASE": "https://technocore.chat",
     "FLOP_ROOM": "technocore",
+    "FLOP_NOTES_URL": "https://github.com/justin201507-rgb/technocore-field-notes",
     "FLOP_DID": "did:key:z6Mkvt9UGK1LuwiXyRKj1EqavL534589MHoWzutQAPULLF3F",
     "MONITOR_URL": "https://example.com/your-monitor-endpoint",
     "MONITOR_JOB": "flop-agent-daily",
