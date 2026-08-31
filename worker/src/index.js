@@ -11,6 +11,11 @@
  * 2026-08-28 改訂：ping の失敗を握りつぶしていたため「cronが動かなかった」と
  * 「動いたが ping が届かなかった」を事後に区別できなかった。実行のたびに KV へ
  * 履歴を積み、ping 自体もリトライして結果を記録する。
+ *
+ * 2026-09-01 改訂：差分検知が「1回鳴って消える」問題を塞いだ。基準線を上書きする実行と
+ * 差分を報告する実行が同じだったため、次の実行は ok に戻り、翌朝のサマリーは ✅ になる。
+ * 見落としが即失権につながる faucet の検知をそこに預けてはいけない。未読は /ack を
+ * 叩くまで残り、その間 ping は ok を返さない。あわせてルーム上限プローブの試行を増やした。
  */
 
 const PKCS8_ED25519_PREFIX = new Uint8Array([
@@ -159,8 +164,11 @@ async function checkArticleClaims(env) {
   // p- は列挙されず、1発言のままの部屋は24時間で消える。
   const probe = "p-capprobe" + [...crypto.getRandomValues(new Uint8Array(8))]
     .map((b) => b.toString(16).padStart(2, "0")).join("");
+  // 🔴 2026-09-01：ここは tries:1／10秒だった。ルーム作成は重く 524 を返すことがあり、
+  //    8/31 は判定不能のまま据え置かれた。その裏で主張は実際に崩れていた。
+  //    保留の扱い自体は正しいが、保留に落ちる回数は減らす。400 は再試行されない（http参照）。
   const r = await http(env, `/r/${enc(probe)}/say/probe/checking-whether-the-room-cap-still-holds`,
-                       { tries: 1, budgetMs: 10000 });
+                       { tries: 3, budgetMs: 30000 });
   if (r.status === 200) {
     broken.push("CLAIM BROKEN: room creation succeeded - the cap has cleared. The published notes say it is reached.");
   } else if (r.status !== 400 || !/room limit reached/i.test(r.text)) {
@@ -312,6 +320,32 @@ async function appendHistory(env, entry) {
   } catch (e) { /* 履歴の失敗で本業を止めない */ }
 }
 
+/**
+ * 🔴 2026-09-01 追加。news は「1回鳴って消える」設計だった。
+ * 差分を報告した実行が、同じ実行で KV の基準線を上書きしてしまうため、
+ * 3時間後の実行は「差分なし＝ok」を返し、翌朝のサマリーは ✅ に戻る。
+ * つまり faucet が実装された回のメールを1通見落とすと、二度と鳴らない。
+ * 検知を人間の注意力に預けない ― 未読として積み、/ack で消すまで毎回のメモに載せ続ける。
+ */
+async function recordNews(env, news) {
+  let pending = [];
+  try {
+    pending = JSON.parse((await env.FLOP_STATE.get("pending_news")) || "[]");
+  } catch (e) { pending = []; }
+  const seen = new Set(pending.map((x) => x.text));
+  let changed = false;
+  for (const text of news) {
+    // 主張崩壊は直るまで毎日鳴る。同じ文面で埋め尽くさない。
+    if (seen.has(text)) continue;
+    pending.push({ t: new Date().toISOString(), text });
+    seen.add(text);
+    changed = true;
+  }
+  if (pending.length > 20) { pending = pending.slice(-20); changed = true; }
+  if (changed) await env.FLOP_STATE.put("pending_news", JSON.stringify(pending));
+  return pending;
+}
+
 async function run(env, { force = false, trigger = "manual" } = {}) {
   const started = new Date().toISOString();
   const did = env.FLOP_DID;
@@ -332,17 +366,21 @@ async function run(env, { force = false, trigger = "manual" } = {}) {
   }
 
   const { news, claims } = await watch(env, { forceClaims: force });
+  // 今回ぶんだけでなく、未読で残っている差分を全部持ち回る。
+  const pending = await recordNews(env, news);
 
   const ok = note.status === 200 && (post === null || post.status === 200);
   const summary =
     `note ${note.status} ${note.path}` +
     (post ? ` / say ${post.status} ${post.room}` : " / say skipped (already posted today)") +
-    (news.length ? ` / ⚠️ ${news.join(" | ")}` : "") +
+    // 件数を先に出す。ping のメモは400字で切られるので、切られても「何件あるか」は残る。
+    (pending.length ? ` / ⚠️ 未読${pending.length}件: ${pending.map((x) => x.text).join(" | ")}` : "") +
     (claims && claims.unknown.length ? ` / 判定不能: ${claims.unknown.join("; ")}` : "");
 
-  const ping = await pingMonitor(env, ok && !news.length ? "ok" : "error", summary);
+  // 未読が1件でも残っている限り ok に戻さない＝毎朝のサマリーに出続ける。
+  const ping = await pingMonitor(env, ok && !pending.length ? "ok" : "error", summary);
 
-  const result = { started, trigger, did, ok, note, post, news, claims, ping };
+  const result = { started, trigger, did, ok, note, post, news, pending, claims, ping };
   await env.FLOP_STATE.put("last_run", JSON.stringify(result));
   await appendHistory(env, {
     t: started, trigger, ok,
@@ -388,12 +426,20 @@ export default {
       return Response.json({ room, nonce, status: r.status, text: swept_ });
     }
 
+    // 未読の差分を読んだ、と人間が宣言する口。これを叩くまで警報は下がらない。
+    if (url.pathname === "/ack") {
+      const before = JSON.parse((await env.FLOP_STATE.get("pending_news")) || "[]");
+      await env.FLOP_STATE.put("pending_news", "[]");
+      return Response.json({ cleared: before.length, items: before });
+    }
+
     if (url.pathname === "/status") {
-      const [last, history, lastNoteOk, lastClaims] = await Promise.all([
+      const [last, history, lastNoteOk, lastClaims, pending] = await Promise.all([
         env.FLOP_STATE.get("last_run"),
         env.FLOP_STATE.get("history"),
         env.FLOP_STATE.get("last_note_ok"),
         env.FLOP_STATE.get("last_claims"),
+        env.FLOP_STATE.get("pending_news"),
       ]);
       const { ns, key } = await noteLocation(env.FLOP_DID);
       const live = await http(env, `/kv/${enc(ns)}/${enc(key)}`, { tries: 2, budgetMs: 8000 });
@@ -406,11 +452,12 @@ export default {
         last_note_ok: lastNoteOk,
         hours_since_note_write: hoursSinceNote === null ? null : Number(hoursSinceNote.toFixed(1)),
         hours_until_reaped: hoursSinceNote === null ? null : Number((168 - hoursSinceNote).toFixed(1)),
+        pending_news: pending ? JSON.parse(pending) : [],
         last_claims: lastClaims ? JSON.parse(lastClaims) : null,
         last_run: last ? JSON.parse(last) : null,
         history: history ? JSON.parse(history) : [],
       });
     }
-    return new Response("flop-agent: /run or /status\n", { status: 404 });
+    return new Response("flop-agent: /run, /status, /ack or /say\n", { status: 404 });
   },
 };
