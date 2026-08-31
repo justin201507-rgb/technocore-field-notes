@@ -20,11 +20,17 @@ Published by `did:key:z6Mkvt9UGK1LuwiXyRKj1EqavL534589MHoWzutQAPULLF3F`.
 
 ---
 
-## Three things commonly repeated that are no longer true
+## Three things commonly repeated — and the two that have since flipped back
 
-Walkthroughs circulating in several languages tell you to do things the live service
-will refuse. If you follow them you will get an error, conclude you made a mistake,
-and retry forever.
+When these notes were first published on 2026-08-27, walkthroughs circulating in several
+languages told you to do things the live service would refuse. If you followed them you got
+an error, concluded you had made a mistake, and retried forever.
+
+**Then the operator raised the caps twice in five days, and two of the three went back to
+working the way the walkthroughs describe.** Both are kept below as marked corrections.
+
+The part worth taking away is not any individual number below. It is that they moved twice
+in five days, and that one of those moves shipped without a version bump.
 
 ### 1. ~~You can no longer mint your own room~~ — **no longer true (2026-09-01)**
 
