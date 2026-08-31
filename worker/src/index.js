@@ -159,10 +159,12 @@ async function checkArticleClaims(env) {
   const broken = [];   // 主張が崩れた＝記事が誤情報になった
   const unknown = [];  // 確認できなかった＝「異常なし」と同じ扱いにしてはいけない
 
-  // 主張1：ルーム上限に到達していて、新しい部屋は作れない。
-  // 読み取りだけで確かめる方法が無いので実際に書いてみる。上限のままなら 400 が返るだけで
-  // 何も作られない。作られてしまうのは「状況が変わった日」の1回だけで、しかも
-  // p- は列挙されず、1発言のままの部屋は24時間で消える。
+  // 主張1（2026-09-01に反転）：記事はいま「ルームは作れる」と書いている。だから見張る対象も
+  // 「また作れなくなること」に変わる。チェックしているのは常に“いま記事が主張している内容”で
+  // あって、最初に書いた内容ではない。ここを反転し忘れると、訂正済みの事実で毎日鳴り続け、
+  // 警報そのものが読まれなくなる（誤報に慣れるのが一番危ない）。
+  // 通常系では実際に部屋が1つ作られるが、p- は列挙されず、1発言のままなので24時間で消える。
+  // 1IPあたり1日20部屋まで作れる枠に対して、消費するのは1日1つ。
   const probe = "p-capprobe" + [...crypto.getRandomValues(new Uint8Array(8))]
     .map((b) => b.toString(16).padStart(2, "0")).join("");
   // 🔴 2026-09-01：ここは tries:1／10秒だった。ルーム作成は重く 524 を返すことがあり、
@@ -170,13 +172,14 @@ async function checkArticleClaims(env) {
   //    保留の扱い自体は正しいが、保留に落ちる回数は減らす。400 は再試行されない（http参照）。
   const r = await http(env, `/r/${enc(probe)}/say/probe/checking-whether-the-room-cap-still-holds`,
                        { tries: 3, budgetMs: 30000 });
-  if (r.status === 200) {
-    broken.push("CLAIM BROKEN: room creation succeeded - the cap has cleared. The published notes say it is reached.");
-  } else if (r.status !== 400 || !/room limit reached/i.test(r.text)) {
+  if (r.status === 400 && /room limit reached/i.test(r.text)) {
+    broken.push("CLAIM BROKEN: room creation is refused again - the cap is reached. The published notes say it has cleared.");
+  } else if (r.status !== 200) {
     unknown.push(`room-cap: unexpected ${r.status} ${r.text.slice(0, 80)}`);
   }
 
-  // 主張2：旧 /kv/did/ が満杯かどうか。固定値では判定しない ―
+  // 主張2（2026-08-29に反転済み）：記事はいま「旧 /kv/did/ は満杯ではない」と書いている。
+  // よって見張る対象は「また満杯になること」。固定値では判定しない ―
   // 上限そのものが動くので、サーバが今そう言っている値と突き合わせる。
   // 一覧は約2MBあるので余裕をもった予算を与える。取れなければ unknown に落とす。
   const [manifestRes, legacy] = await Promise.all([
@@ -191,8 +194,8 @@ async function checkArticleClaims(env) {
       const n = (legacy.text.match(/^\/kv\//gm) || []).length;
       if (!cap || !n) {
         unknown.push(`legacy-did: cap=${cap} count=${n}`);
-      } else if (n < cap * 0.99) {
-        broken.push(`CLAIM BROKEN: legacy /kv/did/ holds ${n} of ${cap} keys - it is NOT full and accepts writes again.`);
+      } else if (n >= cap * 0.99) {
+        broken.push(`CLAIM BROKEN: legacy /kv/did/ is full again at ${n} of ${cap} keys. The published notes say it accepts writes.`);
       }
     } catch (e) {
       unknown.push("legacy-did: " + e.message);
