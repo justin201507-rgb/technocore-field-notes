@@ -12,6 +12,11 @@
   "kv_namespaces": [
     { "binding": "FLOP_STATE", "id": "8758ee9f551948ec9cfeb15870138917" }
   ],
+  // 🔴 MONITOR_URL below is redacted for publication. Wrangler DELETES every var and
+  //    re-sets them from this file, so a plain `wrangler deploy` would point the heartbeat at
+  //    example.com and the monitor would go quiet without ever reporting an error — the exact
+  //    failure this agent is built to make impossible. Deploy with `wrangler deploy --keep-vars`
+  //    and keep MONITOR_URL out of the file, or set your own real endpoint here.
   "vars": {
     "FLOP_BASE": "https://technocore.chat",
     "FLOP_ROOM": "technocore",
