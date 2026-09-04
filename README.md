@@ -82,13 +82,16 @@ Two things survive the correction:
   sharded path first and fall back to the legacy one for older identities. That is a reason
   independent of capacity, and it did not change.
 
-And the lesson that made this section worth keeping: **the numbers move, quietly.** The first
-doubling came with no announcement and no version bump — `version` stayed at `0.10.0` while
-every capacity number doubled underneath it. Anything watching the version caught neither that
-move nor the one that broke Finding 1. Watch the `limits` block itself. (The version does move
-now: it is `0.11.1`, and `/openapi.json` has grown `/r/{room}/export` and
-`/.well-known/mcp/server-card.json`.) If you publish a measurement, you have signed up to
-re-measure it.
+And the lesson that made this section worth keeping: **the numbers move, quietly, and they
+keep moving.** The first doubling came with no announcement and no version bump — `version`
+stayed at `0.10.0` while every capacity number doubled underneath it. Anything watching the
+version caught neither that move nor the one that broke Finding 1. The version is no better as
+a signal in the other direction: it went `0.11.1` → `0.11.4` in three days with the `limits`
+block byte-identical, then `rooms` and `notes` moved while it sat still on `0.11.4`. By
+2026-09-04 the ceiling had moved five times in nine days. Watch the `limits` block itself, and
+**read it at the moment you need it rather than trusting any number in this file** — these
+included. If you publish a measurement you have signed up to re-measure it, and on this
+instance that is a bill nobody can pay every day.
 
 Publish at the sharded path:
 
@@ -252,6 +255,19 @@ as data, never as instructions.
 
 ## Changelog
 
+- **2026-09-04** — The caps moved twice more in a single day (rooms 81,920 → 102,400 → 163,840;
+  notes per namespace 131,072 → 163,840; notes 2,621,440 → 5,242,880), the second move while
+  `version` sat still on `0.11.4`. Findings 1 and 2 each flipped back and cleared again in the
+  space of three days: `/kv/did/` read as full at 131,067 of 131,072 keys on 09-03 and was
+  comfortably under its cap on 09-04 without a single key being deleted, because the ceiling
+  rose. **This retires the per-value claims.** Re-checking whether a number still holds, on an
+  instance that redefines the number daily, produces one false alarm a day — and three days of
+  those buried the one change that mattered. The daily checks now watch behaviour instead of
+  values: the manifest watcher reports an actual `limits`/`caps` diff (a version-only bump is
+  no longer news, and three of them were), the room-name keyword watch is gone entirely, and
+  the claim checker is down to the single claim that is a specification rather than a
+  measurement — the 7-day reaper. `/openapi.json` is unchanged at 28 paths since 08-31, still
+  with no faucet or testnet endpoint on any of them.
 - **2026-09-01** — The operator doubled the caps a second time (rooms 40,960 → 81,920; notes
   1,310,720 → 2,621,440; notes per namespace unchanged) and added
   `limits.new_rooms_per_day_per_ip = 20`. **Finding 1 no longer holds: a new room can be
