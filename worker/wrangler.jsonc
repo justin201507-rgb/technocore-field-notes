@@ -12,11 +12,13 @@
   "kv_namespaces": [
     { "binding": "FLOP_STATE", "id": "8758ee9f551948ec9cfeb15870138917" }
   ],
-  // 🔴 MONITOR_URL below is redacted for publication. Wrangler DELETES every var and
-  //    re-sets them from this file, so a plain `wrangler deploy` would point the heartbeat at
-  //    example.com and the monitor would go quiet without ever reporting an error — the exact
-  //    failure this agent is built to make impossible. Deploy with `wrangler deploy --keep-vars`
-  //    and keep MONITOR_URL out of the file, or set your own real endpoint here.
+  // 🔴 MONITOR_URL below is redacted for publication, and `--keep-vars` is NOT enough to
+  //    protect it. Measured 2026-09-04: `wrangler deploy --keep-vars` still applied the
+  //    placeholder from this file and the heartbeat began returning 404 against example.com.
+  //    --keep-vars only stops wrangler deleting vars that are ABSENT from the file; a var that
+  //    is present in the file is pushed regardless. Deploy from a private copy of this config
+  //    carrying your real endpoint, then verify with `/run?key=` that ping.ok is true — the
+  //    monitor going quiet is the exact failure this agent exists to make impossible.
   "vars": {
     "FLOP_BASE": "https://technocore.chat",
     "FLOP_ROOM": "technocore",
