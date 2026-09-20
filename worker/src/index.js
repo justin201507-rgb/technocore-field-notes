@@ -226,6 +226,49 @@ function shapeDiff(prev, next) {
   } catch (e) { return "(diff failed)"; }
 }
 
+/**
+ * 🔴 2026-09-16 追加。1回の読みで警報を出すのをやめた。
+ *
+ * この日 06:18Z の読みが limits 4つ同時の減少を報告した（rooms 250000 -> 81920 ほか）。
+ * 約90分後に20回叩き直すと全部が元の値で、/config も元の値だった。減った4つは
+ * 2026-09-01 の組そのまま＝古い設定の断面を1回だけ掴んだ。ロールバック中なのか
+ * エッジ/インスタンス間の不一致なのかは特定できない。推測しない。
+ *
+ * 旧実装の本当の罠は「鳴ったこと」ではなく **基準線をその場で書き換えたこと**。
+ * 偽の値が基準線に座るので、次の実行で必ず逆向きの差分がもう一度鳴る＝
+ * 1回の揺れで2回鳴る。読まれない警報を作る作り方そのものだった。
+ *
+ * ⚠️ 再読には必ずキャッシュバスターを付ける。agent.json も openapi.json も
+ * 静的文書扱いで s-maxage=300（/config の static_cache_seconds）。素で読み直すと
+ * 同じキャッシュ断面をもう一度掴んで「2回一致した」と誤認する＝対策が効かない。
+ *
+ * ⚠️ 副作用として、本物の変化の検出が最大1サイクル（3時間）遅れることがある。
+ * ただし**取りこぼさない**：確認が取れない限り基準線を書き換えないので、
+ * 次の実行で同じ差分がもう一度出て、そこで確認が通る。
+ */
+async function confirmed(env, path, shapeOf, expect) {
+  await sleep(1500);
+  const again = await http(env, path + (path.includes("?") ? "&" : "?") + "cb=" + Date.now(),
+                           { tries: 2, budgetMs: 8000 });
+  if (again.status !== 200) return { ok: false, why: `confirm read ${again.status}` };
+  try {
+    return shapeOf(again.text) === expect ? { ok: true, why: "" } : { ok: false, why: "reads disagree" };
+  } catch (e) { return { ok: false, why: "confirm read unparseable" }; }
+}
+
+/**
+ * 確認が取れなかった差分の置き場。警報は出さない（pending_news には入れない）が、
+ * 捨てると「このサービスは同じ時刻に違う答えを返す」という事実そのものが見えなくなる。
+ * /status から読む。ここが伸び続けるなら、揺れているのは一時的ではないということ。
+ */
+async function recordUnconfirmed(env, diff, why) {
+  let items = [];
+  try { items = JSON.parse((await env.FLOP_STATE.get("unconfirmed")) || "[]"); } catch (e) { items = []; }
+  items.push({ t: new Date().toISOString(), diff, why });
+  if (items.length > 20) items = items.slice(-20);
+  await env.FLOP_STATE.put("unconfirmed", JSON.stringify(items));
+}
+
 async function watch(env, { forceClaims = false } = {}) {
   const news = [];
 
@@ -234,8 +277,20 @@ async function watch(env, { forceClaims = false } = {}) {
     try {
       const shape = manifestShape(JSON.parse(manifest.text));
       const prev = normalizeShape(await env.FLOP_STATE.get("manifest"));
-      if (prev && prev !== shape) news.push("manifest limits changed: " + shapeDiff(prev, shape));
-      if (prev !== shape) await env.FLOP_STATE.put("manifest", shape);
+      if (!prev) {
+        await env.FLOP_STATE.put("manifest", shape);   // 初回は基準線を置くだけ。鳴らさない
+      } else if (prev !== shape) {
+        const diff = shapeDiff(prev, shape);
+        const c = await confirmed(env, "/.well-known/agent.json",
+                                  (t) => manifestShape(JSON.parse(t)), shape);
+        if (c.ok) {
+          news.push("manifest limits changed: " + diff);
+          await env.FLOP_STATE.put("manifest", shape);
+        } else {
+          // 🔴 基準線は触らない。触ると次の実行で逆向きの差分がもう一度鳴る
+          await recordUnconfirmed(env, diff, c.why);
+        }
+      }
     } catch (e) { /* 壊れたJSONは黙って無視。警報の材料にはしない */ }
   }
 
@@ -246,14 +301,28 @@ async function watch(env, { forceClaims = false } = {}) {
     try {
       const paths = Object.keys(JSON.parse(spec.text).paths || {}).sort();
       const prev = await env.FLOP_STATE.get("openapi_paths");
-      if (prev) {
-        const before = new Set(JSON.parse(prev));
-        const added = paths.filter((x) => !before.has(x));
-        const removed = JSON.parse(prev).filter((x) => !paths.includes(x));
+      if (!prev) {
+        await env.FLOP_STATE.put("openapi_paths", JSON.stringify(paths));
+      } else {
+        const before = JSON.parse(prev);
+        const beforeSet = new Set(before);
+        const added = paths.filter((x) => !beforeSet.has(x));
+        const removed = before.filter((x) => !paths.includes(x));
+        // 🔴 追加は待っているものそのもの（faucet）。確認で遅らせない、即鳴らす。
+        // 誤報側は消失だけなので、確認を要求するのもそちらだけでいい。
         if (added.length) news.push("NEW API paths: " + added.join(", "));
-        if (removed.length) news.push("removed API paths: " + removed.join(", "));
+        let trust = true;
+        if (removed.length) {
+          const shapeOf = (t) => JSON.stringify(Object.keys(JSON.parse(t).paths || {}).sort());
+          const c = await confirmed(env, "/openapi.json", shapeOf, JSON.stringify(paths));
+          if (c.ok) news.push("removed API paths: " + removed.join(", "));
+          else { trust = false; await recordUnconfirmed(env, "removed API paths: " + removed.join(", "), c.why); }
+        }
+        // 確認が取れなかった消失は基準線に反映しない＝一度見たパスを見失わない。
+        // 追加分だけは取り込む（同じ追加で二度鳴らさないため）。
+        await env.FLOP_STATE.put("openapi_paths",
+          JSON.stringify(trust ? paths : [...new Set([...before, ...paths])].sort()));
       }
-      await env.FLOP_STATE.put("openapi_paths", JSON.stringify(paths));
     } catch (e) { /* 壊れたJSONは警報の材料にしない */ }
   }
 
@@ -425,12 +494,13 @@ export default {
     }
 
     if (url.pathname === "/status") {
-      const [last, history, lastNoteOk, lastClaims, pending] = await Promise.all([
+      const [last, history, lastNoteOk, lastClaims, pending, unconfirmed] = await Promise.all([
         env.FLOP_STATE.get("last_run"),
         env.FLOP_STATE.get("history"),
         env.FLOP_STATE.get("last_note_ok"),
         env.FLOP_STATE.get("last_claims"),
         env.FLOP_STATE.get("pending_news"),
+        env.FLOP_STATE.get("unconfirmed"),
       ]);
       const { ns, key } = await noteLocation(env.FLOP_DID);
       const live = await http(env, `/kv/${enc(ns)}/${enc(key)}`, { tries: 2, budgetMs: 8000 });
@@ -444,6 +514,8 @@ export default {
         hours_since_note_write: hoursSinceNote === null ? null : Number(hoursSinceNote.toFixed(1)),
         hours_until_reaped: hoursSinceNote === null ? null : Number((168 - hoursSinceNote).toFixed(1)),
         pending_news: pending ? JSON.parse(pending) : [],
+        // 確認が取れず警報にしなかった差分。伸び続けるなら揺れは一時的ではない
+        unconfirmed_diffs: unconfirmed ? JSON.parse(unconfirmed) : [],
         last_claims: lastClaims ? JSON.parse(lastClaims) : null,
         last_run: last ? JSON.parse(last) : null,
         history: history ? JSON.parse(history) : [],
